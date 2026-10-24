@@ -92,6 +92,7 @@ static struct option longopts[] = {
 	{ "ticket",         required_argument, NULL, 'T' },
 	{ "load-shsh",      required_argument, NULL,  5  },
 	{ "allow-auxiliary-tss", no_argument,  NULL,  6  },
+	{ "firmware-manifest", required_argument, NULL, 12 },
 	{ "no-restore",     no_argument,       NULL, 'z' },
 	{ "version",        no_argument,       NULL, 'v' },
 	{ "ipsw-info",      no_argument,       NULL, 'I' },
@@ -184,6 +185,7 @@ static void usage(int argc, char* argv[], int err)
 	"  -T, --ticket PATH     Use file at PATH to send as AP ticket\n" \
 	"  --load-shsh PATH      Use a saved SHSH/SHSH2 plist instead of requesting TSS\n" \
 	"  --allow-auxiliary-tss Allow auxiliary signing with --load-shsh\n" \
+	"  --firmware-manifest PATH Use this BuildManifest to sign SEP firmware\n" \
 	"  --variant VARIANT     Use given VARIANT to match the build identity to use,\n" \
         "                        e.g. 'Customer Erase Install (IPSW)'\n" \
 	"  --ignore-errors       Try to continue the restore process after certain\n" \
@@ -403,6 +405,10 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 	}
 	if (client->saved_tss && ((client->flags & FLAG_CUSTOM) || client->root_ticket)) {
 		logger(LL_ERROR, "--load-shsh cannot be combined with --custom or --ticket\n");
+		return -1;
+	}
+	if (client->auxiliary_manifest && !client->allow_auxiliary_tss) {
+		logger(LL_ERROR, "--firmware-manifest requires --allow-auxiliary-tss\n");
 		return -1;
 	}
 
@@ -1530,6 +1536,40 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 		return -1;
 	}
 
+	if (client->auxiliary_manifest) {
+		plist_t auxiliary_identity = build_manifest_get_build_identity_for_model(
+			client->auxiliary_manifest, client->device->hardware_model);
+		if (!auxiliary_identity || !client->image4supported || !client->allow_auxiliary_tss) {
+			logger(LL_ERROR, "SEP signing requires a matching Image4 build identity and --allow-auxiliary-tss\n");
+			return -1;
+		}
+		const char *hardware_keys[] = { "ApChipID", "ApBoardID", "ApSecurityDomain" };
+		for (size_t i = 0; i < sizeof(hardware_keys)/sizeof(hardware_keys[0]); i++) {
+			plist_t before = plist_dict_get_item(build_identity, hardware_keys[i]);
+			plist_t after = plist_dict_get_item(auxiliary_identity, hardware_keys[i]);
+			if (!before || !after || !plist_compare_node_value(before, after)) {
+				logger(LL_ERROR, "SEP firmware manifest hardware differs at %s\n", hardware_keys[i]);
+				return -1;
+			}
+		}
+		logger(LL_INFO, "Requesting SEP ticket using recovery nonces\n");
+		unsigned char *final_nonce = NULL;
+		unsigned int final_nonce_size = 0;
+		if (get_ap_nonce(client, &final_nonce, &final_nonce_size) < 0 || !final_nonce || !final_nonce_size) {
+			free(final_nonce);
+			logger(LL_ERROR, "Unable to read AP nonce for SEP signing\n");
+			return -1;
+		}
+		free(client->nonce);
+		client->nonce = final_nonce;
+		client->nonce_size = final_nonce_size;
+		if (get_tss_response_internal(client, auxiliary_identity, &client->auxiliary_tss, 1) < 0 ||
+			!plist_dict_get_item(client->auxiliary_tss, "ApImg4Ticket")) {
+			logger(LL_ERROR, "Unable to sign SEP firmware\n");
+			return -1;
+		}
+	}
+
 	// now finally do the magic to put the device into restore mode
 	if (client->mode == MODE_RECOVERY) {
 		mutex_lock(&client->device_event_mutex);
@@ -1651,6 +1691,12 @@ void idevicerestore_client_free(struct idevicerestore_client_t* client)
 	}
 	if (client->saved_tss) {
 		plist_free(client->saved_tss);
+	}
+	if (client->auxiliary_manifest) {
+		plist_free(client->auxiliary_manifest);
+	}
+	if (client->auxiliary_tss) {
+		plist_free(client->auxiliary_tss);
 	}
 	if (client->version_data) {
 		plist_free(client->version_data);
@@ -2050,6 +2096,19 @@ int main(int argc, char* argv[])
 		case 6:
 			client->allow_auxiliary_tss = 1;
 			break;
+
+		case 12: {
+			plist_t manifest = load_restore_plist(optarg);
+			plist_t identities = plist_get_node_type(manifest) == PLIST_DICT ? plist_dict_get_item(manifest, "BuildIdentities") : NULL;
+			if (!identities || plist_get_node_type(identities) != PLIST_ARRAY || !plist_array_get_size(identities)) {
+				logger(LL_ERROR, "Firmware manifest must contain a nonempty BuildIdentities array\n");
+				plist_free(manifest);
+				return EXIT_FAILURE;
+			}
+			plist_free(client->auxiliary_manifest);
+			client->auxiliary_manifest = manifest;
+			break;
+		}
 
 		case 'I':
 			ipsw_info = 1;
@@ -3021,6 +3080,10 @@ int extract_component(ipsw_archive_t ipsw, const char* path, void** component_da
 
 int personalize_component(struct idevicerestore_client_t* client, const char *component_name, const void* component_data, size_t component_size, plist_t tss_response, void** personalized_component, size_t* personalized_component_size)
 {
+	if (client->auxiliary_tss && (!strcmp(component_name, "SEP") ||
+		!strcmp(component_name, "RestoreSEP") || !strcmp(component_name, "SepStage1"))) {
+		tss_response = client->auxiliary_tss;
+	}
 	void* component_blob = NULL;
 	void* stitched_component = NULL;
 	size_t stitched_component_size = 0;

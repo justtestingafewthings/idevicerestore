@@ -96,6 +96,11 @@ Allow auxiliary firmware signing with \f[B]\-\-load\-shsh\f[]. Without this
 option, missing auxiliary tickets or required local policy or RecoveryOS
 signing stop the restore.
 .TP
+.B \-\-firmware\-manifest PATH
+Sign SEP firmware using the BuildManifest at PATH.
+The IPSW must contain the matching SEP firmware. Requires
+\f[B]\-\-allow\-auxiliary\-tss\f[].
+.TP
 .B \-z, \-\-no\-restore
 Do not restore and end after booting to the ramdisk.
 .TP
