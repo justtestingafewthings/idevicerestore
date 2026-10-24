@@ -5429,6 +5429,30 @@ static int restore_wait_for_reconnect(struct idevicerestore_client_t* client)
 }
 #endif
 
+static int restore_set_explicit_system_partition_size(plist_t options, plist_t build_identity, int legacy_size_option)
+{
+	plist_t minimum = plist_access_path(build_identity, 2, "Info", "MinimumSystemPartition");
+	uint64_t minimum_mib = 0;
+	if (!minimum || plist_get_node_type(minimum) != PLIST_UINT) {
+		return 0;
+	}
+	plist_get_uint_val(minimum, &minimum_mib);
+	if (!minimum_mib) {
+		return 0;
+	}
+	/* Restored converts this MiB value to a signed byte count. */
+	if (minimum_mib > (uint64_t)INT64_MAX / (1024U * 1024U)) {
+		logger(LL_ERROR, "System partition minimum exceeds the supported size\n");
+		return -1;
+	}
+	plist_dict_set_item(options, "MinimumSystemPartition", plist_new_uint(minimum_mib));
+	if (legacy_size_option) {
+		plist_dict_set_item(options, "SystemPartitionSize", plist_new_uint(minimum_mib));
+	}
+	logger(LL_INFO, "Using minimum system partition size of %" PRIu64 " MiB\n", minimum_mib);
+	return 0;
+}
+
 int restore_device(struct idevicerestore_client_t* client, plist_t build_identity)
 {
 	int err = 0;
@@ -5629,10 +5653,6 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 		//  But i can't seem to find a plausible formula
 		// It did work with multiple macOS versions
 		plist_dict_set_item(opts, "recoveryOSPartitionSize", plist_new_uint(58201));
-		plist_t msp = plist_access_path(build_identity, 2, "Info", "MinimumSystemPartition");
-		if (msp) {
-			plist_dict_set_item(opts, "SystemPartitionSize", plist_copy(msp));
-		}
 	} else {
 		// FIXME: new on iOS 5 ?
 		plist_dict_set_item(opts, "BootImageType", plist_new_string("User"));
@@ -5731,6 +5751,13 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 	plist_dict_set_item(opts, "SystemImage", plist_new_bool(1));
 	if (client->restore_boot_args) {
 		plist_dict_set_item(opts, "RestoreBootArgs", plist_new_string(client->restore_boot_args));
+	}
+	/* Use the system partition minimum from the build identity. */
+	if (restore_set_explicit_system_partition_size(opts, build_identity,
+		client->build_major <= 14 || client->macos_variant != NULL) < 0) {
+		plist_free(opts);
+		restore_client_free(client);
+		return -1;
 	}
 	plist_t spp = plist_access_path(build_identity, 2, "Info", "SystemPartitionPadding");
 	if (spp) {
