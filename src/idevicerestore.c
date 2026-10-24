@@ -92,6 +92,7 @@ static struct option longopts[] = {
 	{ "ticket",         required_argument, NULL, 'T' },
 	{ "load-shsh",      required_argument, NULL,  5  },
 	{ "allow-auxiliary-tss", no_argument,  NULL,  6  },
+	{ "ibss-loaded",     no_argument,       NULL,  8  },
 	{ "firmware-manifest", required_argument, NULL, 12 },
 	{ "no-restore",     no_argument,       NULL, 'z' },
 	{ "version",        no_argument,       NULL, 'v' },
@@ -186,6 +187,7 @@ static void usage(int argc, char* argv[], int err)
 	"  --load-shsh PATH      Use a saved SHSH/SHSH2 plist instead of requesting TSS\n" \
 	"  --allow-auxiliary-tss Allow auxiliary signing with --load-shsh\n" \
 	"  --firmware-manifest PATH Use this BuildManifest to sign SEP firmware\n" \
+	"  --ibss-loaded        Resume from a running iBSS, still upload iBEC\n" \
 	"  --variant VARIANT     Use given VARIANT to match the build identity to use,\n" \
         "                        e.g. 'Customer Erase Install (IPSW)'\n" \
 	"  --ignore-errors       Try to continue the restore process after certain\n" \
@@ -2095,6 +2097,10 @@ int main(int argc, char* argv[])
 
 		case 6:
 			client->allow_auxiliary_tss = 1;
+			break;
+
+		case 8:
+			client->ibss_loaded = 1;
 			break;
 
 		case 12: {

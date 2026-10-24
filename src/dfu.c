@@ -458,38 +458,55 @@ int dfu_enter_recovery(struct idevicerestore_client_t* client, plist_t build_ide
 		return 0;
 	}
 
+	if (client->ibss_loaded) {
+		const struct irecv_device_info *info = irecv_get_device_info(client->dfu->client);
+		if (!info || (info->srtg && *info->srtg) || client->build_major <= 8) {
+			logger(LL_ERROR, "--ibss-loaded requires a running iBSS in soft DFU mode\n");
+			return -1;
+		}
+		logger(LL_INFO, "Using already running iBSS, uploading iBEC next\n");
+	}
+
 	mutex_lock(&client->device_event_mutex);
 
-	if (dfu_send_component(client, build_identity, "iBSS") < 0) {
-		logger(LL_ERROR, "Unable to send iBSS to device\n");
-		irecv_close(client->dfu->client);
-		client->dfu->client = NULL;
-		return -1;
+	if (!client->ibss_loaded) {
+		if (dfu_send_component(client, build_identity, "iBSS") < 0) {
+			mutex_unlock(&client->device_event_mutex);
+			logger(LL_ERROR, "Unable to send iBSS to device\n");
+			irecv_close(client->dfu->client);
+			client->dfu->client = NULL;
+			return -1;
+		}
+		dfu_client_free(client);
 	}
-	dfu_client_free(client);
 
 	if (client->build_major > 8) {
-		/* reconnect */
-		logger(LL_DEBUG, "Waiting for device to disconnect...\n");
-		cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 10000);
-		if (client->mode != MODE_UNKNOWN || (client->flags & FLAG_QUIT)) {
-			mutex_unlock(&client->device_event_mutex);
-			if (!(client->flags & FLAG_QUIT)) {
-				logger(LL_ERROR, "Device did not disconnect. Possibly invalid iBSS. Reset device and try again.\n");
+		if (!client->ibss_loaded) {
+			/* reconnect */
+			logger(LL_DEBUG, "Waiting for device to disconnect...\n");
+			cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 10000);
+			if (client->mode != MODE_UNKNOWN || (client->flags & FLAG_QUIT)) {
+				mutex_unlock(&client->device_event_mutex);
+				if (!(client->flags & FLAG_QUIT)) {
+					logger(LL_ERROR, "Device did not disconnect. Possibly invalid iBSS. Reset device and try again.\n");
+				}
+				return -1;
 			}
-			return -1;
-		}
-		logger(LL_DEBUG, "Waiting for device to reconnect...\n");
-		cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 10000);
-		if ((client->mode != MODE_DFU && client->mode != MODE_RECOVERY) || (client->flags & FLAG_QUIT)) {
-			mutex_unlock(&client->device_event_mutex);
-			if (!(client->flags & FLAG_QUIT)) {
-				logger(LL_ERROR, "Device did not reconnect in DFU or recovery mode. Possibly invalid iBSS. Reset device and try again.\n");
+			logger(LL_DEBUG, "Waiting for device to reconnect...\n");
+			cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 10000);
+			if ((client->mode != MODE_DFU && client->mode != MODE_RECOVERY) || (client->flags & FLAG_QUIT)) {
+				mutex_unlock(&client->device_event_mutex);
+				if (!(client->flags & FLAG_QUIT)) {
+					logger(LL_ERROR, "Device did not reconnect in DFU or recovery mode. Possibly invalid iBSS. Reset device and try again.\n");
+				}
+				return -1;
 			}
-			return -1;
 		}
 		mutex_unlock(&client->device_event_mutex);
-		dfu_client_new(client);
+		if (!client->ibss_loaded && dfu_client_new(client) < 0) {
+			logger(LL_ERROR, "Unable to reconnect to iBSS\n");
+			return -1;
+		}
 
 		/* get nonce */
 		unsigned char* nonce = NULL;

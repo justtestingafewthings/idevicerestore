@@ -101,6 +101,10 @@ Sign SEP firmware using the BuildManifest at PATH.
 The IPSW must contain the matching SEP firmware. Requires
 \f[B]\-\-allow\-auxiliary\-tss\f[].
 .TP
+.B \-\-ibss\-loaded
+Resume from an already running iBSS without sending it again. iBEC is still
+uploaded normally. In DFU mode, this requires soft DFU.
+.TP
 .B \-z, \-\-no\-restore
 Do not restore and end after booting to the ramdisk.
 .TP

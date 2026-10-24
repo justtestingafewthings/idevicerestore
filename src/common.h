@@ -90,6 +90,7 @@ struct idevicerestore_client_t {
 	plist_t auxiliary_manifest;
 	plist_t auxiliary_tss;
 	int allow_auxiliary_tss;
+	int ibss_loaded;
 	int waiting_for_restore;
 	unsigned int recovery_generation;
 	plist_t tss_localpolicy;
