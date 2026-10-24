@@ -85,6 +85,17 @@ Exclude nor/baseband upgrade.
 .B \-t, \-\-shsh
 Fetch TSS record and save to .shsh file, then exit.
 .TP
+.B \-\-load\-shsh PATH
+Load a saved SHSH/SHSH2 plist, optionally gzip-compressed, and reuse it for
+TSS responses during restore.
+The caller must supply a ticket appropriate for the device and firmware.
+Component paths come from BuildManifest when this option is used.
+.TP
+.B \-\-allow\-auxiliary\-tss
+Allow auxiliary firmware signing with \f[B]\-\-load\-shsh\f[]. Without this
+option, missing auxiliary tickets or required local policy or RecoveryOS
+signing stop the restore.
+.TP
 .B \-z, \-\-no\-restore
 Do not restore and end after booting to the ramdisk.
 .TP

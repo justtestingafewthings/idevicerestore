@@ -123,6 +123,45 @@ static int restore_finished = 0;
 
 static int restore_device_connected = 0;
 
+/* Auxiliary signing needs explicit opt-in when restoring with a saved blob. */
+static plist_t restore_get_tss_response(struct idevicerestore_client_t* client, plist_t request)
+{
+	if (!client->saved_tss || client->allow_auxiliary_tss) {
+		return tss_request_send(request, client->tss_url);
+	}
+	plist_dict_iter iter = NULL;
+	char* key = NULL;
+	plist_t value = NULL;
+	int tickets = 0;
+	int missing = 0;
+	plist_dict_new_iter(request, &iter);
+	while (iter) {
+		plist_dict_next_item(request, iter, &key, &value);
+		if (!key) break;
+		uint8_t enabled = 0;
+		if (key[0] == '@' && strstr(key, "Ticket") && plist_get_node_type(value) == PLIST_BOOLEAN) {
+			plist_get_bool_val(value, &enabled);
+			if (enabled) {
+				tickets++;
+				plist_t saved = plist_dict_get_item(client->saved_tss, key+1);
+				uint64_t length = 0;
+				if (!saved || plist_get_node_type(saved) != PLIST_DATA || !plist_get_data_ptr(saved, &length) || !length) {
+					logger(LL_ERROR, "Saved SHSH is missing %s, auxiliary signing is disabled\n", key+1);
+					missing = 1;
+				}
+			}
+		}
+		free(key);
+	}
+	free(iter);
+	if (!tickets || missing) {
+		logger(LL_ERROR, "Saved SHSH cannot satisfy this auxiliary firmware request\n");
+		return NULL;
+	}
+	logger(LL_INFO, "Using saved SHSH for auxiliary firmware\n");
+	return plist_copy(client->saved_tss);
+}
+
 int restore_client_new(struct idevicerestore_client_t* client)
 {
 	struct restore_client_t* restore = (struct restore_client_t*) malloc(sizeof(struct restore_client_t));
@@ -1492,7 +1531,7 @@ int restore_send_component(struct idevicerestore_client_t* client, plist_t messa
 
 	logger(LL_INFO, "About to send %s...\n", component_name);
 
-	if (client->tss) {
+	if (client->tss && !client->saved_tss) {
 		if (tss_response_get_path_by_entry(client->tss, component, &path) < 0) {
 			logger(LL_DEBUG, "No path for component %s in TSS, will fetch from build identity\n", component);
 		}
@@ -1580,7 +1619,7 @@ int restore_send_nor(struct idevicerestore_client_t* client, plist_t message)
 		flash_version_1 = plist_dict_get_item(arguments, "FlashVersion1") ? 1 : 0;
 	}
 
-	if (client->tss) {
+	if (client->tss && !client->saved_tss) {
 		if (tss_response_get_path_by_entry(client->tss, "LLB", &llb_path) < 0) {
 			logger(LL_DEBUG, "Could not get LLB path from TSS data, will fetch from build identity\n");
 		}
@@ -1990,7 +2029,7 @@ static int restore_sign_bbfw(const char* bbfwtmp, plist_t bbtss, const unsigned 
 				logger(LL_ERROR, "can't match element name '%s' to baseband firmware file name.\n", key);
 				goto leave;
 			}
-			char* ext = strrchr(signfn, '.');
+			const char* ext = strrchr(signfn, '.');
 			if (!strcmp(ext, ".fls")) {
 				is_fls = 1;
 			}
@@ -2116,7 +2155,7 @@ static int restore_sign_bbfw(const char* bbfwtmp, plist_t bbtss, const unsigned 
 		const char* fn = zip_get_name(za, i, 0);
 		if (!keep) {
 			if (fn) {
-				char* ext = strrchr(fn, '.');
+				const char* ext = strrchr(fn, '.');
 				if (ext && (!strcmp(ext, ".fls") || !strcmp(ext, ".mbn") || !strcmp(ext, ".elf") || !strcmp(ext, ".bin"))) {
 					keep = 1;
 				}
@@ -2336,7 +2375,7 @@ static int restore_send_baseband_data(struct idevicerestore_client_t* client, pl
 		}
 		logger(LL_INFO, "Sending Baseband TSS request...\n");
 		logger_dump_plist(LL_DEBUG, request, 0);
-		response = tss_request_send(request, client->tss_url);
+		response = restore_get_tss_response(client, request);
 		plist_free(request);
 		plist_free(parameters);
 		if (response == NULL) {
@@ -2716,7 +2755,7 @@ static plist_t restore_get_se_firmware_data(struct idevicerestore_client_t* clie
 	plist_free(parameters);
 
 	logger(LL_INFO, "Sending SE TSS request...\n");
-	response = tss_request_send(request, client->tss_url);
+	response = restore_get_tss_response(client, request);
 	plist_free(request);
 	if (response == NULL) {
 		logger(LL_ERROR, "Unable to fetch SE ticket\n");
@@ -2812,7 +2851,7 @@ static plist_t restore_get_savage_firmware_data(struct idevicerestore_client_t* 
 	logger(LL_DEBUG, "%s: using %s\n", __func__, comp_name);
 
 	logger(LL_INFO, "Sending Savage TSS request...\n");
-	response = tss_request_send(request, client->tss_url);
+	response = restore_get_tss_response(client, request);
 	plist_free(request);
 	if (response == NULL) {
 		logger(LL_ERROR, "Unable to fetch Savage ticket\n");
@@ -2922,7 +2961,7 @@ static plist_t restore_get_yonkers_firmware_data(struct idevicerestore_client_t*
 	logger(LL_DEBUG, "%s: using %s\n", __func__, comp_name);
 
 	logger(LL_INFO, "Sending Yonkers TSS request...\n");
-	response = tss_request_send(request, client->tss_url);
+	response = restore_get_tss_response(client, request);
 	plist_free(request);
 	if (response == NULL) {
 		logger(LL_ERROR, "Unable to fetch Yonkers ticket\n");
@@ -3028,7 +3067,7 @@ static plist_t restore_get_rose_firmware_data(struct idevicerestore_client_t* cl
 	plist_free(parameters);
 
 	logger(LL_INFO, "Sending Rose TSS request...\n");
-	response = tss_request_send(request, client->tss_url);
+	response = restore_get_tss_response(client, request);
 	plist_free(request);
 	if (response == NULL) {
 		logger(LL_ERROR, "Unable to fetch Rose ticket\n");
@@ -3174,7 +3213,7 @@ static plist_t restore_get_veridian_firmware_data(struct idevicerestore_client_t
 	plist_free(parameters);
 
 	logger(LL_INFO, "Sending Veridian TSS request...\n");
-	response = tss_request_send(request, client->tss_url);
+	response = restore_get_tss_response(client, request);
 	plist_free(request);
 	if (response == NULL) {
 		logger(LL_ERROR, "Unable to fetch Veridian ticket\n");
@@ -3286,7 +3325,7 @@ static plist_t restore_get_generic_firmware_data(struct idevicerestore_client_t*
 
 	logger(LL_INFO, "Sending %s TSS request...\n", s_updater_name);
 	logger_dump_plist(LL_DEBUG, request, 0);
-	response = tss_request_send(request, client->tss_url);
+	response = restore_get_tss_response(client, request);
 	plist_free(request);
 	if (response == NULL) {
 		logger(LL_ERROR, "Unable to fetch %s ticket\n", s_updater_name);
@@ -3348,7 +3387,7 @@ static plist_t restore_get_tcon_firmware_data(struct idevicerestore_client_t* cl
 	plist_free(parameters);
 
 	logger(LL_INFO, "Sending Baobab TSS request...\n");
-	response = tss_request_send(request, client->tss_url);
+	response = restore_get_tss_response(client, request);
 	plist_free(request);
 	if (response == NULL) {
 		logger(LL_ERROR, "Unable to fetch Baobab ticket\n");
@@ -3494,7 +3533,7 @@ static plist_t restore_get_timer_firmware_data(struct idevicerestore_client_t* c
 	plist_free(parameters);
 
 	logger(LL_INFO, "Sending %s TSS request...\n", ticket_name);
-	response = tss_request_send(request, client->tss_url);
+	response = restore_get_tss_response(client, request);
 	plist_free(request);
 	if (response == NULL) {
 		logger(LL_ERROR, "Unable to fetch %s\n", ticket_name);
@@ -3678,7 +3717,7 @@ static plist_t restore_get_cryptex1_firmware_data(struct idevicerestore_client_t
 	plist_free(parameters);
 
 	logger(LL_INFO, "Sending %s TSS request...\n", s_updater_name);
-	response = tss_request_send(request, client->tss_url);
+	response = restore_get_tss_response(client, request);
 	plist_free(request);
 	if (response == NULL) {
 		logger(LL_ERROR, "Unable to fetch %s ticket\n", s_updater_name);
@@ -4331,7 +4370,7 @@ int restore_send_personalized_boot_object_v3(struct idevicerestore_client_t* cli
 		}
 	} else {
 		// Get component path
-		if (client->tss) {
+		if (client->tss && !client->saved_tss) {
 			if (tss_response_get_path_by_entry(client->tss, component, &path) < 0) {
 				logger(LL_DEBUG, "No path for component %s in TSS, will fetch from build identity\n", component);
 			}
@@ -4494,7 +4533,7 @@ int restore_send_source_boot_object_v4(struct idevicerestore_client_t* client, p
 		path = strdup("SystemVersion.plist");
 	} else {
 		// Get component path
-		if (client->tss) {
+		if (client->tss && !client->saved_tss) {
 			if (tss_response_get_path_by_entry(client->tss, component, &path) < 0) {
 				logger(LL_DEBUG, "No path for component %s in TSS, will fetch from build identity\n", component);
 			}
@@ -5476,7 +5515,7 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 		plist_free(hwinfo);
 	}
 
-	if (plist_dict_get_item(client->tss, "BBTicket")) {
+	if ((!client->saved_tss || !client->allow_auxiliary_tss) && plist_dict_get_item(client->tss, "BBTicket")) {
 		client->restore->bbtss = plist_copy(client->tss);
 	}
 

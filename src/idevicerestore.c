@@ -90,6 +90,8 @@ static struct option longopts[] = {
 	{ "plain-progress", no_argument,       NULL, 'P' },
 	{ "restore-mode",   no_argument,       NULL, 'R' },
 	{ "ticket",         required_argument, NULL, 'T' },
+	{ "load-shsh",      required_argument, NULL,  5  },
+	{ "allow-auxiliary-tss", no_argument,  NULL,  6  },
 	{ "no-restore",     no_argument,       NULL, 'z' },
 	{ "version",        no_argument,       NULL, 'v' },
 	{ "ipsw-info",      no_argument,       NULL, 'I' },
@@ -101,6 +103,18 @@ static struct option longopts[] = {
 #endif
 	{ NULL, 0, NULL, 0 }
 };
+
+static int has_legacy_component_blobs(plist_t response);
+static int get_tss_response_internal(struct idevicerestore_client_t* client, plist_t build_identity, plist_t* tss, int fresh_auxiliary);
+
+static int auxiliary_tss_allowed(struct idevicerestore_client_t* client)
+{
+	if (client->saved_tss && !client->allow_auxiliary_tss) {
+		logger(LL_ERROR, "Auxiliary signing with --load-shsh requires --allow-auxiliary-tss\n");
+		return 0;
+	}
+	return 1;
+}
 
 static void usage(int argc, char* argv[], int err)
 {
@@ -168,6 +182,8 @@ static void usage(int argc, char* argv[], int err)
 	"  -P, --plain-progress  Print progress as plain step and progress\n" \
 	"  -R, --restore-mode    Allow restoring from Restore mode\n" \
 	"  -T, --ticket PATH     Use file at PATH to send as AP ticket\n" \
+	"  --load-shsh PATH      Use a saved SHSH/SHSH2 plist instead of requesting TSS\n" \
+	"  --allow-auxiliary-tss Allow auxiliary signing with --load-shsh\n" \
 	"  --variant VARIANT     Use given VARIANT to match the build identity to use,\n" \
         "                        e.g. 'Customer Erase Install (IPSW)'\n" \
 	"  --ignore-errors       Try to continue the restore process after certain\n" \
@@ -383,6 +399,10 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 
 	if ((client->flags & FLAG_LATEST) && (client->flags & FLAG_CUSTOM)) {
 		logger(LL_ERROR, "FLAG_LATEST cannot be used with FLAG_CUSTOM.\n");
+		return -1;
+	}
+	if (client->saved_tss && ((client->flags & FLAG_CUSTOM) || client->root_ticket)) {
+		logger(LL_ERROR, "--load-shsh cannot be combined with --custom or --ticket\n");
 		return -1;
 	}
 
@@ -821,7 +841,7 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 		plist_free(parameters);
 
 		// send request and grab response
-		plist_t response = tss_request_send(request, client->tss_url);
+		plist_t response = auxiliary_tss_allowed(client) ? tss_request_send(request, client->tss_url) : NULL;
 		plist_free(request);
 		if (response == NULL) {
 			logger(LL_ERROR, "Unable to send TSS request\n");
@@ -1324,7 +1344,7 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 						logger(LL_ERROR, "Variant '%s' not found in BuildManifest\n", recovery_variant_str);
 						return -1;
 					}
-					if (get_tss_response(client, client->recovery_variant, &client->tss_recoveryos_root_ticket) < 0) {
+					if (get_tss_response_internal(client, client->recovery_variant, &client->tss_recoveryos_root_ticket, 1) < 0) {
 						logger(LL_ERROR, "Unable to get SHSH blobs for this device (%s)\n", recovery_variant_str);
 						return -1;
 					}
@@ -1629,6 +1649,9 @@ void idevicerestore_client_free(struct idevicerestore_client_t* client)
 	if (client->tss_url) {
 		free(client->tss_url);
 	}
+	if (client->saved_tss) {
+		plist_free(client->saved_tss);
+	}
 	if (client->version_data) {
 		plist_free(client->version_data);
 	}
@@ -1738,6 +1761,40 @@ void idevicerestore_set_progress_callback(struct idevicerestore_client_t* client
 }
 
 #ifndef IDEVICERESTORE_NOMAIN
+static plist_t load_restore_plist(const char* path)
+{
+	const unsigned int limit = 32U * 1024U * 1024U;
+	plist_t result = NULL;
+	gzFile file = gzopen(path, "rb");
+	if (!file) {
+		logger(LL_ERROR, "Unable to open plist: %s\n", path);
+		return NULL;
+	}
+	/* gzread also accepts uncompressed XML and binary plists. Read one byte
+	 * past the limit to detect oversized files without truncating them. */
+	char* data = malloc(limit + 1);
+	if (!data) {
+		gzclose(file);
+		logger(LL_ERROR, "Unable to allocate plist buffer\n");
+		return NULL;
+	}
+	int size = gzread(file, data, limit + 1);
+	int zerror = Z_OK;
+	gzerror(file, &zerror);
+	gzclose(file);
+	if (size > 0 && (unsigned int)size <= limit && zerror == Z_OK) {
+		if (plist_from_memory(data, (uint32_t)size, &result, NULL) != PLIST_ERR_SUCCESS) {
+			plist_free(result);
+			result = NULL;
+		}
+	}
+	free(data);
+	if (!result) {
+		logger(LL_ERROR, "Unable to load plist, expected at most 32 MiB of valid plist data: %s\n", path);
+	}
+	return result;
+}
+
 static struct idevicerestore_client_t* idevicerestore_client = NULL;
 
 static void handle_signal(int sig)
@@ -1975,6 +2032,24 @@ int main(int argc, char* argv[])
 			logger(LL_INFO, "Using ApTicket found at %s length %u\n", optarg, client->root_ticket_len);
 			break;
 		}
+
+		case 5: {
+			plist_t saved = load_restore_plist(optarg);
+			if (!saved || plist_get_node_type(saved) != PLIST_DICT ||
+				(!plist_dict_get_item(saved, "ApImg4Ticket") && !plist_dict_get_item(saved, "APTicket") &&
+				 !has_legacy_component_blobs(saved))) {
+				logger(LL_ERROR, "Saved SHSH must contain ApImg4Ticket, APTicket, or legacy IMG3 component signatures\n");
+				plist_free(saved);
+				return EXIT_FAILURE;
+			}
+			plist_free(client->saved_tss);
+			client->saved_tss = saved;
+			break;
+		}
+
+		case 6:
+			client->allow_auxiliary_tss = 1;
+			break;
 
 		case 'I':
 			ipsw_info = 1;
@@ -2347,13 +2422,66 @@ int get_preboard_manifest(struct idevicerestore_client_t* client, plist_t build_
 	return res;
 }
 
+static int has_legacy_component_blobs(plist_t response)
+{
+	plist_dict_iter iter = NULL;
+	char* name = NULL;
+	plist_t component = NULL;
+	int found = 0;
+	if (!response || plist_get_node_type(response) != PLIST_DICT) return 0;
+	plist_dict_new_iter(response, &iter);
+	if (!iter) return 0;
+	while (1) {
+		plist_dict_next_item(response, iter, &name, &component);
+		if (!name) break;
+		free(name);
+		name = NULL;
+		if (component && plist_get_node_type(component) == PLIST_DICT) {
+			plist_t blob = plist_dict_get_item(component, "Blob");
+			uint64_t size = 0;
+			if (blob && plist_get_node_type(blob) == PLIST_DATA && plist_get_data_ptr(blob, &size) && size) {
+				found = 1;
+				break;
+			}
+		}
+	}
+	free(iter);
+	return found;
+}
+
 int get_tss_response(struct idevicerestore_client_t* client, plist_t build_identity, plist_t* tss)
+{
+	return get_tss_response_internal(client, build_identity, tss, 0);
+}
+
+static int get_tss_response_internal(struct idevicerestore_client_t* client, plist_t build_identity, plist_t* tss, int fresh_auxiliary)
 {
 	plist_t request = NULL;
 	plist_t response = NULL;
 	*tss = NULL;
+	if (fresh_auxiliary && !auxiliary_tss_allowed(client)) {
+		return -1;
+	}
+	if (client->saved_tss && !fresh_auxiliary) {
+		const char* key = client->image4supported ? "ApImg4Ticket" : "APTicket";
+		plist_t ticket = plist_dict_get_item(client->saved_tss, key);
+		uint64_t size = 0;
+		if (!ticket || plist_get_node_type(ticket) != PLIST_DATA ||
+			!plist_get_data_ptr(ticket, &size) || !size) {
+			if (!client->image4supported && client->build_major <= 8 && has_legacy_component_blobs(client->saved_tss)) {
+				*tss = plist_copy(client->saved_tss);
+				logger(LL_INFO, "Using saved IMG3 component signatures\n");
+				return *tss ? 0 : -1;
+			}
+			logger(LL_ERROR, "Saved SHSH is missing a valid %s\n", key);
+			return -1;
+		}
+		*tss = plist_copy(client->saved_tss);
+		logger(LL_INFO, "Using saved SHSH, skipping TSS request\n");
+		return *tss ? 0 : -1;
+	}
 
-	if ((client->build_major <= 8) || (client->flags & FLAG_CUSTOM)) {
+	if (!fresh_auxiliary && ((client->build_major <= 8) || (client->flags & FLAG_CUSTOM))) {
 		logger(LL_ERROR, "checking for local shsh\n");
 
 		/* first check for local copy */
@@ -2418,16 +2546,29 @@ int get_tss_response(struct idevicerestore_client_t* client, plist_t build_ident
 	/* populate parameters */
 	plist_t parameters = plist_new_dict();
 	plist_dict_merge(&parameters, client->parameters);
+	if (fresh_auxiliary) {
+		plist_dict_remove_item(parameters, "SepNonce");
+		plist_dict_remove_item(parameters, "ApSepNonce");
+	}
 
 	plist_dict_set_item(parameters, "ApECID", plist_new_uint(client->ecid));
 	if (client->nonce) {
 		plist_dict_set_item(parameters, "ApNonce", plist_new_data((const char*)client->nonce, client->nonce_size));
 	}
 
-	if (!plist_dict_get_item(parameters, "SepNonce")) {
+	plist_t firmware_manifest = plist_dict_get_item(build_identity, "Manifest");
+	int has_sep = plist_dict_get_item(firmware_manifest, "SEP") != NULL ||
+		plist_dict_get_item(firmware_manifest, "RestoreSEP") != NULL;
+	if (has_sep && !plist_dict_get_item(parameters, "SepNonce") && !plist_dict_get_item(parameters, "ApSepNonce")) {
 		unsigned char* sep_nonce = NULL;
 		unsigned int sep_nonce_size = 0;
-		get_sep_nonce(client, &sep_nonce, &sep_nonce_size);
+		int sep_result = get_sep_nonce(client, &sep_nonce, &sep_nonce_size);
+		if (fresh_auxiliary && (sep_result < 0 || !sep_nonce || !sep_nonce_size)) {
+			free(sep_nonce);
+			plist_free(parameters);
+			logger(LL_ERROR, "Unable to read SEP nonce for auxiliary signing\n");
+			return -1;
+		}
 		if (sep_nonce) {
 			plist_dict_set_item(parameters, "ApSepNonce", plist_new_data((const char*)sep_nonce, sep_nonce_size));
 			free(sep_nonce);
@@ -2543,6 +2684,9 @@ int get_recoveryos_root_ticket_tss_response(struct idevicerestore_client_t* clie
 	plist_t request = NULL;
 	plist_t response = NULL;
 	*tss = NULL;
+	if (!auxiliary_tss_allowed(client)) {
+		return -1;
+	}
 
 	/* populate parameters */
 	plist_t parameters = plist_new_dict();
@@ -2642,6 +2786,9 @@ int get_recovery_os_local_policy_tss_response(
 	plist_t request = NULL;
 	plist_t response = NULL;
 	*tss = NULL;
+	if (!auxiliary_tss_allowed(client)) {
+		return -1;
+	}
 
 	/* populate parameters */
 	plist_t parameters = plist_new_dict();
@@ -2726,6 +2873,9 @@ int get_local_policy_tss_response(struct idevicerestore_client_t* client, plist_
 	plist_t request = NULL;
 	plist_t response = NULL;
 	*tss = NULL;
+	if (!auxiliary_tss_allowed(client)) {
+		return -1;
+	}
 
 	/* populate parameters */
 	plist_t parameters = plist_new_dict();
@@ -2849,7 +2999,7 @@ int build_manifest_get_identity_count(plist_t build_manifest)
 
 int extract_component(ipsw_archive_t ipsw, const char* path, void** component_data, size_t* component_size)
 {
-	char* component_name = NULL;
+	const char* component_name = NULL;
 	if (!ipsw || !path || !component_data || !component_size) {
 		return -1;
 	}
@@ -2858,7 +3008,7 @@ int extract_component(ipsw_archive_t ipsw, const char* path, void** component_da
 	if (component_name != NULL)
 		component_name++;
 	else
-		component_name = (char*) path;
+		component_name = path;
 
 	logger(LL_INFO, "Extracting %s (%s)...\n", component_name, path);
 	if (ipsw_extract_to_memory(ipsw, path, component_data, component_size) < 0) {

@@ -143,7 +143,7 @@ int dfu_send_component(struct idevicerestore_client_t* client, plist_t build_ide
 		component_size = sizeof(lpol_file);
 		memcpy(component_data, lpol_file, component_size);
 	} else {
-		if (tss) {
+		if (tss && !client->saved_tss) {
 			if (tss_response_get_path_by_entry(tss, component, &path) < 0) {
 				logger(LL_DEBUG, "No path for component %s in TSS, will fetch from build_identity\n", component);
 			}

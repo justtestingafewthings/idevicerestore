@@ -285,7 +285,8 @@ int recovery_send_component(struct idevicerestore_client_t* client, plist_t buil
 	char* path = NULL;
 	irecv_error_t err = 0;
 
-	if (client->tss) {
+	/* Use build identity paths when loading saved SHSH. */
+	if (client->tss && !client->saved_tss) {
 		if (tss_response_get_path_by_entry(client->tss, component, &path) < 0) {
 			logger(LL_DEBUG, "No path for component %s in TSS, will fetch from build_identity\n", component);
 		}
