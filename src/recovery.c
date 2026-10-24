@@ -31,6 +31,7 @@
 #include <libimobiledevice/libimobiledevice.h>
 
 #include <libtatsu/tss.h>
+#include <libimobiledevice-glue/sha.h>
 
 #include "idevicerestore.h"
 #include "img3.h"
@@ -301,7 +302,20 @@ int recovery_send_component(struct idevicerestore_client_t* client, plist_t buil
 
 	void* component_data = NULL;
 	size_t component_size = 0;
-	int ret = extract_component(client->ipsw, path, &component_data, &component_size);
+	int nonce_ibec = client->use_nonce_ibec && !strcmp(component, "iBEC");
+	int ret;
+	if (nonce_ibec) {
+		ret = read_file(client->nonce_ibec_path, &component_data, &component_size);
+		if (ret < 0 || !component_data || !component_size || component_size > 128*1024*1024) {
+			free(path);
+			free(component_data);
+			logger(LL_ERROR, "Unable to read iBEC from %s\n", client->nonce_ibec_path);
+			return -1;
+		}
+		logger(LL_INFO, "Using iBEC from %s\n", client->nonce_ibec_path);
+	} else {
+		ret = extract_component(client->ipsw, path, &component_data, &component_size);
+	}
 	free(path);
 	if (ret < 0) {
 		logger(LL_ERROR, "Unable to extract component: %s\n", component);
@@ -396,6 +410,101 @@ int recovery_boot_ibec(struct idevicerestore_client_t* client, plist_t build_ide
 		return -1;
 	}
 	return recovery_client_new(client);
+}
+
+static int recovery_write_nonce_generator(struct idevicerestore_client_t* client)
+{
+	if (irecv_setenv(client->recovery->client, "com.apple.System.boot-nonce", client->nonce_generator) != IRECV_E_SUCCESS ||
+		irecv_saveenv(client->recovery->client) != IRECV_E_SUCCESS) {
+		logger(LL_ERROR, "Unable to set and save nonce generator\n");
+		return -1;
+	}
+	char *value = NULL;
+	irecv_error_t error = irecv_getenv(client->recovery->client, "com.apple.System.boot-nonce", &value);
+	char *end = NULL;
+	int matches = error == IRECV_E_SUCCESS && value && *value &&
+		strtoull(value, &end, 16) == strtoull(client->nonce_generator, NULL, 16) && end && !*end;
+	free(value);
+	if (!matches) {
+		logger(LL_ERROR, "Unable to verify nonce generator\n");
+		return -1;
+	}
+	return 0;
+}
+
+int recovery_prepare_restore_nonce(struct idevicerestore_client_t* client, plist_t build_identity)
+{
+	if (!client->ticket_ap_nonce_size) {
+		return 0;
+	}
+	if (client->mode != MODE_RECOVERY ||
+		((!client->recovery || !client->recovery->client) && recovery_client_new(client) < 0)) {
+		logger(LL_ERROR, "Unable to connect in recovery mode to check AP nonce\n");
+		return -1;
+	}
+	unsigned char *nonce = NULL;
+	unsigned int size = 0;
+	if (recovery_get_ap_nonce(client, &nonce, &size) < 0 || !nonce) {
+		free(nonce);
+		logger(LL_ERROR, "Unable to read the AP nonce before restoring\n");
+		return -1;
+	}
+	int matches = size == client->ticket_ap_nonce_size && !memcmp(nonce, client->ticket_ap_nonce, size);
+	free(nonce);
+	if (matches) {
+		logger(LL_INFO, "AP nonce matches restore ticket, no generator change needed\n");
+		return 0;
+	}
+	if (!*client->nonce_generator) {
+		logger(LL_ERROR, "AP nonce does not match restore ticket\n");
+		return -1;
+	}
+	uint64_t generator = strtoull(client->nonce_generator, NULL, 16);
+	unsigned char seed[8], digest[48];
+	for (unsigned int i = 0; i < sizeof(seed); i++) {
+		seed[i] = (unsigned char)(generator >> (8*i));
+	}
+	if (client->ticket_ap_nonce_size == 20) {
+		sha1(seed, sizeof(seed), digest);
+	} else {
+		sha384(seed, sizeof(seed), digest);
+	}
+	if (memcmp(digest, client->ticket_ap_nonce, client->ticket_ap_nonce_size)) {
+		logger(LL_ERROR, "Nonce generator does not produce the expected AP nonce\n");
+		return -1;
+	}
+	logger(LL_INFO, "Setting nonce generator to %s and reloading iBEC...\n", client->nonce_generator);
+	if (recovery_write_nonce_generator(client) < 0) {
+		return -1;
+	}
+	client->use_nonce_ibec = 1;
+	int boot_result = recovery_boot_ibec(client, build_identity);
+	client->use_nonce_ibec = 0;
+	if (boot_result < 0) {
+		return -1;
+	}
+	nonce = NULL;
+	size = 0;
+	if (recovery_get_ap_nonce(client, &nonce, &size) < 0 || !nonce) {
+		free(nonce);
+		logger(LL_ERROR, "Unable to read the AP nonce after reloading iBEC\n");
+		return -1;
+	}
+	matches = size == client->ticket_ap_nonce_size && !memcmp(nonce, client->ticket_ap_nonce, size);
+	if (!matches) {
+		free(nonce);
+		logger(LL_ERROR, "AP nonce does not match restore ticket after reloading iBEC\n");
+		return -1;
+	}
+	free(client->nonce);
+	client->nonce = nonce;
+	client->nonce_size = size;
+	/* Retain the generator for subsequent boots. */
+	if (recovery_write_nonce_generator(client) < 0) {
+		return -1;
+	}
+	logger(LL_INFO, "AP nonce matches restore ticket after reloading iBEC\n");
+	return 0;
 }
 
 int recovery_send_applelogo(struct idevicerestore_client_t* client, plist_t build_identity)

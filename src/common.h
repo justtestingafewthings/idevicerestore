@@ -93,6 +93,11 @@ struct idevicerestore_client_t {
 	int ibss_loaded;
 	int waiting_for_restore;
 	unsigned int recovery_generation;
+	char nonce_generator[19];
+	char* nonce_ibec_path;
+	int use_nonce_ibec;
+	unsigned char ticket_ap_nonce[48];
+	unsigned int ticket_ap_nonce_size;
 	plist_t tss_localpolicy;
 	plist_t tss_recoveryos_root_ticket;
 	char* tss_url;

@@ -93,6 +93,9 @@ static struct option longopts[] = {
 	{ "load-shsh",      required_argument, NULL,  5  },
 	{ "allow-auxiliary-tss", no_argument,  NULL,  6  },
 	{ "ibss-loaded",     no_argument,       NULL,  8  },
+	{ "ticket-apnonce",  required_argument, NULL,  9  },
+	{ "set-nonce-generator", required_argument, NULL, 10 },
+	{ "nonce-ibec",      required_argument, NULL, 11 },
 	{ "firmware-manifest", required_argument, NULL, 12 },
 	{ "no-restore",     no_argument,       NULL, 'z' },
 	{ "version",        no_argument,       NULL, 'v' },
@@ -188,6 +191,9 @@ static void usage(int argc, char* argv[], int err)
 	"  --allow-auxiliary-tss Allow auxiliary signing with --load-shsh\n" \
 	"  --firmware-manifest PATH Use this BuildManifest to sign SEP firmware\n" \
 	"  --ibss-loaded        Resume from a running iBSS, still upload iBEC\n" \
+	"  --ticket-apnonce HEX Check AP nonce against the expected ticket nonce\n" \
+	"  --set-nonce-generator HEX Set nonce generator if the ticket nonce differs\n" \
+	"  --nonce-ibec PATH    Use this iBEC after setting the nonce generator\n" \
 	"  --variant VARIANT     Use given VARIANT to match the build identity to use,\n" \
         "                        e.g. 'Customer Erase Install (IPSW)'\n" \
 	"  --ignore-errors       Try to continue the restore process after certain\n" \
@@ -407,6 +413,10 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 	}
 	if (client->saved_tss && ((client->flags & FLAG_CUSTOM) || client->root_ticket)) {
 		logger(LL_ERROR, "--load-shsh cannot be combined with --custom or --ticket\n");
+		return -1;
+	}
+	if (*client->nonce_generator && (!client->saved_tss || !client->ticket_ap_nonce_size || !client->nonce_ibec_path)) {
+		logger(LL_ERROR, "--set-nonce-generator requires --load-shsh, --ticket-apnonce and --nonce-ibec\n");
 		return -1;
 	}
 	if (client->auxiliary_manifest && !client->allow_auxiliary_tss) {
@@ -1538,6 +1548,9 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 		return -1;
 	}
 
+	if (recovery_prepare_restore_nonce(client, build_identity) < 0) {
+		return -2;
+	}
 	if (client->auxiliary_manifest) {
 		plist_t auxiliary_identity = build_manifest_get_build_identity_for_model(
 			client->auxiliary_manifest, client->device->hardware_model);
@@ -1728,6 +1741,7 @@ void idevicerestore_client_free(struct idevicerestore_client_t* client)
 	if (client->restore_boot_args) {
 		free(client->restore_boot_args);
 	}
+	free(client->nonce_ibec_path);
 	if (client->cache_dir) {
 		free(client->cache_dir);
 	}
@@ -2101,6 +2115,58 @@ int main(int argc, char* argv[])
 
 		case 8:
 			client->ibss_loaded = 1;
+			break;
+
+		case 9: {
+			const char *value = !strncmp(optarg, "0x", 2) ? optarg+2 : optarg;
+			size_t length = strlen(value);
+			if (length != 40 && length != 64 && length != 96) {
+				logger(LL_ERROR, "Ticket AP nonce must contain 20, 32 or 48 hexadecimal bytes\n");
+				return EXIT_FAILURE;
+			}
+			for (size_t i = 0; i < length; i++) {
+				if (!isxdigit((unsigned char)value[i])) {
+					logger(LL_ERROR, "Ticket AP nonce contains a non-hexadecimal character\n");
+					return EXIT_FAILURE;
+				}
+			}
+			client->ticket_ap_nonce_size = length/2;
+			for (size_t i = 0; i < length/2; i++) {
+				unsigned int byte = 0;
+				sscanf(value+2*i, "%2x", &byte);
+				client->ticket_ap_nonce[i] = byte;
+			}
+			break;
+		}
+
+		case 10: {
+			const char *value = !strncmp(optarg, "0x", 2) ? optarg+2 : optarg;
+			if (strlen(value) != 16) {
+				logger(LL_ERROR, "Nonce generator must contain exactly 16 hexadecimal digits\n");
+				return EXIT_FAILURE;
+			}
+			for (size_t i = 0; i < 16; i++) {
+				if (!isxdigit((unsigned char)value[i])) {
+					logger(LL_ERROR, "Nonce generator contains a non-hexadecimal character\n");
+					return EXIT_FAILURE;
+				}
+				client->nonce_generator[2+i] = tolower((unsigned char)value[i]);
+			}
+			memcpy(client->nonce_generator, "0x", 2);
+			client->nonce_generator[18] = '\0';
+			break;
+		}
+
+		case 11:
+			if (!*optarg) {
+				logger(LL_ERROR, "Nonce iBEC path must not be empty\n");
+				return EXIT_FAILURE;
+			}
+			free(client->nonce_ibec_path);
+			client->nonce_ibec_path = strdup(optarg);
+			if (!client->nonce_ibec_path) {
+				return EXIT_FAILURE;
+			}
 			break;
 
 		case 12: {

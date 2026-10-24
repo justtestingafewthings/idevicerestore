@@ -105,6 +105,19 @@ The IPSW must contain the matching SEP firmware. Requires
 Resume from an already running iBSS without sending it again. iBEC is still
 uploaded normally. In DFU mode, this requires soft DFU.
 .TP
+.B \-\-ticket\-apnonce HEX
+Check AP nonce against the expected ticket nonce before booting the restore ramdisk.
+.TP
+.B \-\-set\-nonce\-generator HEX
+If AP nonce differs from the ticket nonce, set and save this nonce generator,
+reload iBEC, and verify AP nonce before restoring. Requires
+\f[B]\-\-load\-shsh\f[], \f[B]\-\-ticket\-apnonce\f[] and
+\f[B]\-\-nonce\-ibec\f[].
+.TP
+.B \-\-nonce\-ibec PATH
+Use this iBEC after setting the nonce generator. It must support nonce
+generation and NVRAM writes. The initial iBEC comes from the IPSW.
+.TP
 .B \-z, \-\-no\-restore
 Do not restore and end after booting to the ramdisk.
 .TP
