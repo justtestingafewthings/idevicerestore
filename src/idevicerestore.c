@@ -92,6 +92,7 @@ static struct option longopts[] = {
 	{ "ticket",         required_argument, NULL, 'T' },
 	{ "load-shsh",      required_argument, NULL,  5  },
 	{ "allow-auxiliary-tss", no_argument,  NULL,  6  },
+	{ "restore-boot-args", required_argument, NULL, 7 },
 	{ "ibss-loaded",     no_argument,       NULL,  8  },
 	{ "ticket-apnonce",  required_argument, NULL,  9  },
 	{ "set-nonce-generator", required_argument, NULL, 10 },
@@ -179,7 +180,7 @@ static void usage(int argc, char* argv[], int err)
 	EXCLUSIVE_USB_ACCESS_FLAG_LINE \
 	"  -c, --custom          Restore with a custom firmware (requires bootrom exploit)\n" \
 	"  -s, --server URL      Override default signing server request URL\n" \
-	"  -x, --exclude         Exclude nor/baseband upgrade (legacy devices)\n" \
+	"  -x, --exclude         Do not flash NOR or baseband firmware\n" \
 	"  -t, --shsh            Fetch TSS record and save to .shsh file, then exit\n" \
 	"  -z, --no-restore      Do not restore and end after booting to the ramdisk\n" \
 	"  -k, --keep-pers       Write personalized components to files for debugging\n" \
@@ -190,6 +191,7 @@ static void usage(int argc, char* argv[], int err)
 	"  --load-shsh PATH      Use a saved SHSH/SHSH2 plist instead of requesting TSS\n" \
 	"  --allow-auxiliary-tss Allow auxiliary signing with --load-shsh\n" \
 	"  --firmware-manifest PATH Use this BuildManifest to sign SEP firmware\n" \
+	"  --restore-boot-args ARGS Set boot arguments for the restore kernel\n" \
 	"  --ibss-loaded        Resume from a running iBSS, still upload iBEC\n" \
 	"  --ticket-apnonce HEX Check AP nonce against the expected ticket nonce\n" \
 	"  --set-nonce-generator HEX Set nonce generator if the ticket nonce differs\n" \
@@ -2111,6 +2113,18 @@ int main(int argc, char* argv[])
 
 		case 6:
 			client->allow_auxiliary_tss = 1;
+			break;
+
+		case 7:
+			if (!*optarg || strlen(optarg) > 220) {
+				logger(LL_ERROR, "Restore boot arguments must contain 1 through 220 bytes\n");
+				return EXIT_FAILURE;
+			}
+			free(client->restore_boot_args);
+			client->restore_boot_args = strdup(optarg);
+			if (!client->restore_boot_args) {
+				return EXIT_FAILURE;
+			}
 			break;
 
 		case 8:

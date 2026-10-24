@@ -5035,12 +5035,16 @@ logger(LL_DEBUG, "%s: type = %s\n", __func__, type);
 					return -1;
 				}
 			} else {
-				logger(LL_INFO, "Not sending NORData... Quitting...\n");
-				client->flags |= FLAG_QUIT;
+				logger(LL_ERROR, "Device requested NORData although NOR flashing was disabled\n");
+				return -1;
 			}
 		}
 
 		else if (!strcmp(type, "BasebandData")) {
+			if (client->flags & FLAG_EXCLUDE) {
+				logger(LL_ERROR, "Device requested BasebandData although baseband flashing was disabled\n");
+				return -1;
+			}
 			if(restore_send_baseband_data(client, message) < 0) {
 				logger(LL_ERROR, "Unable to send baseband data\n");
 				return -1;
@@ -5639,7 +5643,6 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 		// FIXME: not required for iOS 5?
 		//plist_dict_set_item(opts, "DeviceTreeFile", plist_new_string("DeviceTree.k48ap.img3"));
 		plist_dict_set_item(opts, "FirmwareDirectory", plist_new_string("."));
-		// FIXME: usable if false? (-x parameter)
 		plist_dict_set_item(opts, "FlashNOR", plist_new_bool(1));
 		// FIXME: not required for iOS 5?
 		//plist_dict_set_item(opts, "KernelCacheFile", plist_new_string("kernelcache.release.k48"));
@@ -5700,6 +5703,13 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 		//plist_dict_set_item(opts, "UserLocale", plist_new_string("en_US"));
 		/* this is mandatory on iOS 7+ to allow restore from normal mode */
 		plist_dict_set_item(opts, "PersonalizedDuringPreflight", plist_new_bool(1));
+	}
+
+	if (client->flags & FLAG_EXCLUDE) {
+		plist_dict_set_item(opts, "FlashNOR", plist_new_bool(0));
+		plist_dict_set_item(opts, "FlashBaseband", plist_new_bool(0));
+		plist_dict_set_item(opts, "UpdateBaseband", plist_new_bool(0));
+		logger(LL_INFO, "NOR and baseband flashing are disabled for this restore\n");
 	}
 
 	// Added for iOS 18.0 and macOS 15.0

@@ -126,9 +126,9 @@ int recovery_set_autoboot(struct idevicerestore_client_t* client, int enable)
 
 int recovery_enter_restore(struct idevicerestore_client_t* client, plist_t build_identity)
 {
-    if (client->macos_variant) {
+    if (!client->restore_boot_args && client->macos_variant) {
         client->restore_boot_args = strdup("rd=md0 nand-enable-reformat=1 -progress -restore");
-    } else if (client->build_major >= 8) {
+    } else if (!client->restore_boot_args && client->build_major >= 8) {
         client->restore_boot_args = strdup("rd=md0 nand-enable-reformat=1 -progress");
     }
 
@@ -649,6 +649,10 @@ int recovery_send_kernelcache(struct idevicerestore_client_t* client, plist_t bu
 		strcpy(setba, "setenv boot-args ");
 		strcat(setba, client->restore_boot_args);
 		recovery_error = irecv_send_command(client->recovery->client, setba);
+		if (recovery_error != IRECV_E_SUCCESS) {
+			logger(LL_ERROR, "Unable to set restore kernel boot arguments\n");
+			return -1;
+		}
 	}
 
 	recovery_error = irecv_send_command_breq(client->recovery->client, "bootx", 1);

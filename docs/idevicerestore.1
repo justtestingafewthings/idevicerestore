@@ -78,9 +78,7 @@ Override the default signing server request URL. If the URL doesn't contain
 a path component, the default path \f[B]/TSS/controller?action=2\f[] will be added.
 .TP
 .B \-x, \-\-exclude
-Exclude nor/baseband upgrade.
-
-\f[B]NOTE\f[]: This option only works with legacy devices and/or custom firmware.
+Do not flash NOR or baseband firmware.
 .TP
 .B \-t, \-\-shsh
 Fetch TSS record and save to .shsh file, then exit.
@@ -100,6 +98,9 @@ signing stop the restore.
 Sign SEP firmware using the BuildManifest at PATH.
 The IPSW must contain the matching SEP firmware. Requires
 \f[B]\-\-allow\-auxiliary\-tss\f[].
+.TP
+.B \-\-restore\-boot\-args ARGS
+Set restore kernel boot arguments, overriding the defaults.
 .TP
 .B \-\-ibss\-loaded
 Resume from an already running iBSS without sending it again. iBEC is still
