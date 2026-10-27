@@ -93,6 +93,7 @@ struct idevicerestore_client_t {
 	int ibss_loaded;
 	int waiting_for_restore;
 	unsigned int recovery_generation;
+	unsigned int dfu_generation;
 	char nonce_generator[19];
 	char* nonce_ibec_path;
 	int use_nonce_ibec;
@@ -221,6 +222,7 @@ char* realpath(const char *filename, char *resolved_name);
 void get_user_input(char *buf, int maxlen, int secure);
 
 const char* path_get_basename(const char* path);
+int is_legacy_ios(const char *version);
 
 #ifdef __cplusplus
 }

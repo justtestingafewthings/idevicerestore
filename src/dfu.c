@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 #include <libirecovery.h>
 
 #include <libtatsu/tss.h>
@@ -452,7 +453,7 @@ int dfu_enter_recovery(struct idevicerestore_client_t* client, plist_t build_ide
 
 	irecv_get_mode(client->dfu->client, &mode);
 
-	if (mode != IRECV_K_DFU_MODE) {
+	if (mode != IRECV_K_DFU_MODE && mode != IRECV_K_WTF_MODE) {
 		logger(LL_NOTICE, "device is not in DFU mode, assuming recovery mode.\n");
 		client->mode = MODE_RECOVERY;
 		return 0;
@@ -468,6 +469,7 @@ int dfu_enter_recovery(struct idevicerestore_client_t* client, plist_t build_ide
 	}
 
 	mutex_lock(&client->device_event_mutex);
+	unsigned int recovery_generation = client->recovery_generation;
 
 	if (!client->ibss_loaded) {
 		if (dfu_send_component(client, build_identity, "iBSS") < 0) {
@@ -658,23 +660,36 @@ int dfu_enter_recovery(struct idevicerestore_client_t* client, plist_t build_ide
 		dfu_client_free(client);
 	}
 
-	logger(LL_DEBUG, "Waiting for device to disconnect...\n");
-	cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 10000);
-	if (client->mode != MODE_UNKNOWN || (client->flags & FLAG_QUIT)) {
-		mutex_unlock(&client->device_event_mutex);
-		if (!(client->flags & FLAG_QUIT)) {
-			logger(LL_ERROR, "Device did not disconnect. Possibly invalid %s. Reset device and try again.\n", (client->build_major > 8) ? "iBEC" : "iBSS");
+	if (is_legacy_ios(client->version)) {
+		/* Wait for a reconnect without requiring observation of the disconnect. */
+		time_t deadline = time(NULL) + 120;
+		while (client->recovery_generation == recovery_generation && !(client->flags & FLAG_QUIT) && time(NULL) < deadline) {
+			cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 1000);
 		}
-		return -1;
-	}
-	logger(LL_DEBUG, "Waiting for device to reconnect in recovery mode...\n");
-	cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 10000);
-	if (client->mode != MODE_RECOVERY || (client->flags & FLAG_QUIT)) {
-		mutex_unlock(&client->device_event_mutex);
-		if (!(client->flags & FLAG_QUIT)) {
-			logger(LL_ERROR, "Device did not reconnect in recovery mode. Possibly invalid %s. Reset device and try again.\n", (client->build_major > 8) ? "iBEC" : "iBSS");
+		if (client->recovery_generation == recovery_generation || client->mode != MODE_RECOVERY || (client->flags & FLAG_QUIT)) {
+			mutex_unlock(&client->device_event_mutex);
+			logger(LL_ERROR, "Legacy iBSS did not reconnect in recovery mode\n");
+			return -1;
 		}
-		return -1;
+	} else {
+		logger(LL_DEBUG, "Waiting for device to disconnect...\n");
+		cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 10000);
+		if (client->mode != MODE_UNKNOWN || (client->flags & FLAG_QUIT)) {
+			mutex_unlock(&client->device_event_mutex);
+			if (!(client->flags & FLAG_QUIT)) {
+				logger(LL_ERROR, "Device did not disconnect. Possibly invalid %s. Reset device and try again.\n", (client->build_major > 8) ? "iBEC" : "iBSS");
+			}
+			return -1;
+		}
+		logger(LL_DEBUG, "Waiting for device to reconnect in recovery mode...\n");
+		cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 10000);
+		if (client->mode != MODE_RECOVERY || (client->flags & FLAG_QUIT)) {
+			mutex_unlock(&client->device_event_mutex);
+			if (!(client->flags & FLAG_QUIT)) {
+				logger(LL_ERROR, "Device did not reconnect in recovery mode. Possibly invalid %s. Reset device and try again.\n", (client->build_major > 8) ? "iBEC" : "iBSS");
+			}
+			return -1;
+		}
 	}
 	mutex_unlock(&client->device_event_mutex);
 
