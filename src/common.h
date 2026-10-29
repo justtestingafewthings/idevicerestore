@@ -94,6 +94,7 @@ struct idevicerestore_client_t {
 	int waiting_for_restore;
 	unsigned int recovery_generation;
 	unsigned int dfu_generation;
+	int legacy_recovery;
 	char nonce_generator[19];
 	char* nonce_ibec_path;
 	int use_nonce_ibec;
