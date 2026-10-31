@@ -1281,43 +1281,6 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 		}
 	}
 
-	if (client->flags & FLAG_ERASE && client->flags & FLAG_INTERACTIVE) {
-		int pres = prompt_user(
-		    "WARNING",
-		    "You are about to perform an *ERASE* restore. ALL DATA on the target device will be IRREVERSIBLY DESTROYED. If you want to update your device without erasing the user data, cancel now and restart without -e or --erase command line switch.\n"
-		);
-		if (pres < 0) {
-			client->flags |= FLAG_QUIT;
-			return -1;
-		}
-#if 0
-		char input[64];
-		printf("################################ [ WARNING ] #################################\n"
-		       "# You are about to perform an *ERASE* restore. ALL DATA on the target device #\n"
-		       "# will be IRREVERSIBLY DESTROYED. If you want to update your device without  #\n"
-		       "# erasing the user data, hit CTRL+C now and restart without -e or --erase    #\n"
-		       "# command line switch.                                                       #\n"
-		       "# If you want to continue with the ERASE, please type YES and press ENTER.   #\n"
-		       "##############################################################################\n");
-		while (1) {
-			printf("> ");
-			fflush(stdout);
-			fflush(stdin);
-			input[0] = '\0';
-			get_user_input(input, 63, 0);
-			if (client->flags & FLAG_QUIT) {
-				return -1;
-			}
-			if (*input != '\0' && !strcmp(input, "YES")) {
-				break;
-			} else {
-				printf("Invalid input. Please type YES or hit CTRL+C to abort.\n");
-				continue;
-			}
-		}
-#endif
-	}
-
 	idevicerestore_progress(client, RESTORE_STEP_PREPARE, 0.0);
 
 	/* check if all components we need are actually there */
