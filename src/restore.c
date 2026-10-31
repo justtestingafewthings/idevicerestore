@@ -970,6 +970,9 @@ int restore_handle_status_msg(struct idevicerestore_client_t* client, plist_t ms
 		case 53:
 			logger(LL_INFO, "Status: Failed to recover FDR data.\n");
 			break;
+		case 1013:
+			logger(LL_INFO, "Status: Baseband update failed.\n");
+			break;
 		case 1015:
 			logger(LL_INFO, "Status: X-Gold Baseband Update Failed. Defective Unit?\n");
 			break;
